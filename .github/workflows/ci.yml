@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    name: Lint & Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax check
+        run: |
+          python -m py_compile elena.py
+          python -m py_compile main.py
+          echo "✓ Syntax OK"
+
+      - name: Import check
+        run: |
+          python -c "
+          from elena import (
+            APP_NAME, VERSION, AUTHOR, DEFAULT_MODEL,
+            Session, OpenRouterProvider, StreamRenderer, ElenaAgent, C,
+          )
+          print('✓ elena.py imports OK')
+          from main import BANNER, HELP_TEXT, print_banner, load_or_prompt_key
+          print('✓ main.py imports OK')
+          "
+
+      - name: Unit tests
+        run: |
+          python -c "
+          import os
+          from elena import (
+            Session, OpenRouterProvider, StreamRenderer, ElenaAgent,
+            AUTOCOMPACT_THRESHOLD, RECENT_KEEP, MAX_TOKENS, PERSONA,
+          )
+          from rich.console import Console
+
+          # --- Session ---
+          s = Session()
+          s.add('user', 'hello')
+          s.add('assistant', 'hi')
+          assert len(s.messages) == 2
+          ctx = s.get_context_messages()
+          assert ctx[0]['role'] == 'user'
+          print('✓ Session.add / get_context_messages')
+
+          # boundary: context starts at first user turn
+          s2 = Session()
+          s2.add('assistant', 'orphan')
+          s2.add('user', 'real start')
+          ctx2 = s2.get_context_messages()
+          assert ctx2[0]['role'] == 'user'
+          print('✓ Session context alignment')
+
+          # autocompact
+          s3 = Session()
+          for i in range(35):
+              s3.add('user', f'q{i}')
+              s3.add('assistant', f'a{i}')
+          assert s3.needs_compaction()
+          pre = len(s3.messages)
+          s3.compact('Packed summary.')
+          assert s3.summary == 'Packed summary.'
+          assert len(s3.messages) <= RECENT_KEEP
+          assert not s3.needs_compaction()
+          print(f'✓ Autocompact: {pre} → {len(s3.messages)} messages')
+
+          # save / load round-trip
+          import elena as _e
+          _orig = _e.SESSION_FILE
+          _e.SESSION_FILE = _e.BASE_DIR / '_ci_tmp.json'
+          s4 = Session()
+          s4.add('user', 'ci-round-trip')
+          s4.summary = 'ci summary'
+          s4.save()
+          s5 = Session.load()
+          assert s5.messages[0]['content'] == 'ci-round-trip'
+          assert s5.summary == 'ci summary'
+          os.unlink(_e.SESSION_FILE)
+          _e.SESSION_FILE = _orig
+          print('✓ Session save/load round-trip')
+
+          # provider
+          p = OpenRouterProvider('sk-test', 'deepseek/deepseek-chat')
+          payload = p._payload([{'role':'user','content':'hi'}], stream=True)
+          assert payload['model'] == 'deepseek/deepseek-chat'
+          assert payload['max_tokens'] == MAX_TOKENS
+          assert 'Bearer sk-test' in p._headers()['Authorization']
+          print('✓ OpenRouterProvider payload + headers')
+
+          # agent build_messages
+          agent = ElenaAgent.__new__(ElenaAgent)
+          agent.provider  = OpenRouterProvider('sk-test', 'deepseek/deepseek-chat')
+          agent.console   = Console(quiet=True)
+          agent._renderer = StreamRenderer(agent.console)
+          agent.session   = Session()
+          agent.session.summary = 'Prior context.'
+          agent.session.add('user', 'old q')
+          agent.session.add('assistant', 'old a')
+          msgs = agent._build_messages('new q')
+          assert msgs[0]['role'] == 'system'
+          assert PERSONA[:20] in msgs[0]['content']
+          assert any(m['content'] == '[Context from earlier in this session]' for m in msgs)
+          assert msgs[-1]['content'] == 'new q'
+          print(f'✓ ElenaAgent._build_messages: {len(msgs)} messages')
+
+          # commands
+          agent2 = ElenaAgent.__new__(ElenaAgent)
+          agent2.provider  = OpenRouterProvider('sk-test', 'model-x')
+          agent2.console   = Console(quiet=True)
+          agent2._renderer = StreamRenderer(agent2.console)
+          agent2.session   = Session()
+          agent2.session.add('user', 'x')
+          agent2.cmd_reset()
+          assert len(agent2.session.messages) == 0
+          agent2.cmd_set_model('openai/gpt-4o')
+          assert agent2.provider.model == 'openai/gpt-4o'
+          assert 'openai/gpt-4o' in agent2.cmd_status()
+          print('✓ cmd_reset / cmd_set_model / cmd_status')
+
+          print()
+          print('All unit tests passed.')
+          "
