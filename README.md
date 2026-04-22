@@ -6,6 +6,8 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![OpenRouter](https://img.shields.io/badge/powered%20by-OpenRouter-orange)](https://openrouter.ai)
 
+[![CI Elite](https://github.com/suryadi346-star/elena-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/suryadi346-star/elena-ai/actions/workflows/ci.yml)
+
 Terminal-based AI assistant with persistent session memory, async streaming, and auto-compaction — inspired by [nanobot](https://github.com/HKUDS/nanobot) architecture.
 
 ---
